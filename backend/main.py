@@ -1,84 +1,141 @@
-from fastapi import FastAPI, File, UploadFile
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI, File, UploadFile, HTTPException
+from fastapi.responses import StreamingResponse
 from io import BytesIO
-from PIL import Image
 import torch
-from torchvision import transforms
 import numpy as np
-import io
-
-# Import the trained U-Net model
+from PIL import Image
+import matplotlib.pyplot as plt
 from segmentation_models_pytorch import Unet
+from fastapi.responses import JSONResponse
+import rasterio
+from rasterio.io import MemoryFile
+from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI()
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Or specify the React app's URL, e.g., ["http://localhost:3000"]
+    allow_credentials=True,
+    allow_methods=["*"],  # Allow all methods (GET, POST, etc.)
+    allow_headers=["*"],  # Allow all headers
+)
 
-# Load the trained model
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-# Initialize your U-Net model (use the same architecture as the one used for training)
-# Model with pre-trained weights, using default decoder channels
+# ---- Load model (must match training exactly) ----
 model = Unet(
-    encoder_name="resnet50",  # Using ResNet50 as the encoder
-    encoder_weights="imagenet",  # Load pre-trained weights from ImageNet
-    in_channels=11,
-    classes=1,  # For binary segmentation (1 class output)
-    decoder_use_batchnorm=True,  # Use batch normalization in the decoder
-    decoder_block_type='transpose',  # Using transposed convolution in the decoder
-  
+    encoder_name="resnet50",
+    encoder_weights=None,        # IMPORTANT: weights come from your .pth, don't re-load ImageNet here
+    in_channels=11,  # Your model expects 11 channels
+    classes=1,
+    decoder_use_batchnorm=True,
+    decoder_block_type="transpose",
 ).to(device)
 
-# Load the model weights (model.pth should be saved in the same directory or provide the full path)
-model.load_state_dict(torch.load("model.pth", map_location=device))
+state_dict = torch.load("model.pth", map_location=device)
+model.load_state_dict(state_dict)
 model.eval()
 
-# Preprocessing pipeline (matching with your training code)
-def preprocess_image(image: Image.Image):
-    # Resize the image to 256x256
-    image = image.resize((256, 256))
-
+# ---- Preprocessing function ----
+def preprocess_tiff(file_bytes: bytes, patch_size=512):
+    """
+    Reads and preprocesses the uploaded TIFF image files to match the training preprocessing pipeline.
+    """
+    with MemoryFile(file_bytes) as memfile:
+        with memfile.open() as src:
+            img_data = src.read()  # (C, H, W)
+    
     # Convert to numpy array
-    image_np = np.array(image).astype(np.float32)
+    img_data = img_data.astype(np.float32)
+    
+    # Normalize the image per channel
+    for c in range(img_data.shape[0]):
+        mean, std = np.nanmean(img_data[c]), np.nanstd(img_data[c]) + 1e-6
+        img_data[c] = (img_data[c] - mean) / std
+    
+    # Center crop to the patch size (512x512)
+    _, H, W = img_data.shape
+    top = (H - patch_size) // 2
+    left = (W - patch_size) // 2
+    img_data = img_data[:, top:top + patch_size, left:left + patch_size]  # (C, patch_size, patch_size)
+    
+    return torch.from_numpy(img_data)  # Shape: (C, H, W)
 
-    # Normalize the image (same as in your training code)
-    for c in range(image_np.shape[2]):  # Assume the image has 3 channels
-        mean, std = np.nanmean(image_np[:, :, c]), np.nanstd(image_np[:, :, c]) + 1e-6
-        image_np[:, :, c] = (image_np[:, :, c] - mean) / std
-
-    # Convert to PyTorch tensor (C, H, W)
-    image_tensor = torch.tensor(image_np.transpose(2, 0, 1))  # Convert HWC to CHW
-    return image_tensor
 
 @app.post("/predict")
-async def predict(file: UploadFile = File(...)):
+async def predict(
+    s1_before_flood: UploadFile = File(...),
+    s1_after_flood: UploadFile = File(...),
+    terrain: UploadFile = File(...),
+    lulc: UploadFile = File(...),
+):
+    # Validate that the uploaded files are TIFF
+    if not (s1_before_flood.content_type == 'image/tiff' and
+            s1_after_flood.content_type == 'image/tiff' and
+            terrain.content_type == 'image/tiff' and
+            lulc.content_type == 'image/tiff'):
+        raise HTTPException(status_code=400, detail="All files must be of type TIFF")
+
     try:
-        # Read image data from the file
-        image_bytes = await file.read()
-        image = Image.open(BytesIO(image_bytes))
+        patch_size = 512  # Set patch size to 512 for consistency
+        
+        # Read each of the uploaded files and preprocess them
+        s1_before_bytes = await s1_before_flood.read()
+        s1_after_bytes = await s1_after_flood.read()
+        terrain_bytes = await terrain.read()
+        lulc_bytes = await lulc.read()
 
-        # Preprocess the image
-        input_image = preprocess_image(image).unsqueeze(0).to(device)  # Add batch dimension
+        # Preprocess the images (resize, normalize, crop)
+        s1_before = preprocess_tiff(s1_before_bytes, patch_size)
+        s1_after = preprocess_tiff(s1_after_bytes, patch_size)
+        terrain_img = preprocess_tiff(terrain_bytes, patch_size)
+        lulc_img = preprocess_tiff(lulc_bytes, patch_size)
 
-        # Make a prediction
+        # Stack the 4 modalities into a single tensor (shape: (4, C, H, W))
+        input_tensor = torch.cat([s1_before, s1_after, terrain_img, lulc_img], dim=0).unsqueeze(0).to(device)
+
+        # Inference
         with torch.no_grad():
-            output = model(input_image)
-            pred = torch.sigmoid(output).cpu().numpy()[0][0]  # Get the prediction for the first channel
+            logits = model(input_tensor)  # output shape: (1, 1, patch_size, patch_size)
+            probs = torch.sigmoid(logits)[0, 0]  # (patch_size, patch_size)
 
         # Convert prediction to binary (flooded area or not)
-        flood_mask = (pred > 0.5).astype(np.uint8)
+        flood_mask = (probs > 0.5).cpu().numpy()  # Convert to NumPy array
+        flood_mask = (flood_mask * 255).astype(np.uint8)  # Convert to 0 or 255 (uint8)
 
-        # Convert the flood mask back to an image to send to frontend (as base64 or simple image)
-        mask_image = Image.fromarray(flood_mask * 255)  # Convert to an image (0 or 255 for flood or no-flood)
+        # ---- Visualization ----
+        # Convert to numpy for visualization
+        x_np = s1_before.numpy()
+
+        # Create a plot with 2 subplots (no ground truth)
+        plt.figure(figsize=(15,5))
+
+        # S1 Before Flood (VV)
+        plt.subplot(1, 2, 1)
+        plt.title("S1 Before Flood - VV (Channel 0)")
+        plt.imshow(x_np[0], cmap="gray")
+
+        # Predicted Flood Map
+        plt.subplot(1, 2, 2)
+        plt.title("Predicted Flood Map")
+        plt.imshow(flood_mask, cmap="Reds")
+
+        # Save the visualization as PNG image
         buffer = BytesIO()
-        mask_image.save(buffer, format="PNG")
+        plt.savefig(buffer, format="PNG")
         buffer.seek(0)
+        plt.close()
 
-        # Return the mask as a response (could be base64 encoded or simply image data)
-        return JSONResponse(content={"flood_mask": buffer.getvalue().decode("latin1")})
+        # Return the PNG image as response
+        return StreamingResponse(buffer, media_type="image/png")
 
     except Exception as e:
-        return JSONResponse(status_code=500, content={"message": f"Error processing image: {str(e)}"})
+        return JSONResponse(
+            status_code=500,
+            content={"message": f"Error processing image: {str(e)}"},
+        )
+
 
 if __name__ == "__main__":
-    # Run the FastAPI app using Uvicorn (start the backend server)
     import uvicorn
     uvicorn.run(app, host="127.0.0.1", port=8000)
