@@ -221,11 +221,11 @@ def saliency_map(model: nn.Module, img: torch.Tensor) -> np.ndarray:
     img = img.clone().detach().to(device)
     img.requires_grad_(True)
 
-    out = model(img)        # (1, 1, H, W)
+    out = model(img)        
     out.sum().backward()
 
-    sal = img.grad.abs().squeeze(0).detach().cpu()  # (C, H, W)
-    sal = sal.sum(0).numpy()                        # (H, W)
+    sal = img.grad.abs().squeeze(0).detach().cpu()  
+    sal = sal.sum(0).numpy()                        
     return sal
 
 
@@ -253,24 +253,24 @@ class GradCAM:
         img = img.clone().detach().to(device)
         img.requires_grad_(True)
 
-        out = self.model(img)      # (1, 1, H, W)
+        out = self.model(img)      
         out.sum().backward()
 
-        grads = self.gradients         # (1, C_l, H_l, W_l)
-        acts = self.activations        # (1, C_l, H_l, W_l)
+        grads = self.gradients         
+        acts = self.activations       
 
-        w = grads.mean(dim=(2, 3), keepdim=True)        # (1, C_l, 1, 1)
-        cam = (w * acts).sum(dim=1, keepdim=True)       # (1, 1, H_l, W_l)
+        w = grads.mean(dim=(2, 3), keepdim=True)       
+        cam = (w * acts).sum(dim=1, keepdim=True)       
         cam = F.relu(cam)
 
         cam = F.interpolate(
             cam,
-            size=img.shape[2:],        # upsample to input size
+            size=img.shape[2:],       
             mode="bilinear",
             align_corners=False,
         )
 
-        cam = cam.squeeze().detach().cpu().numpy()      # (H, W)
+        cam = cam.squeeze().detach().cpu().numpy()      
         return cam
 
 
