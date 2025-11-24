@@ -44,11 +44,14 @@ const Subtitle = styled.p`
   color: #9ca3af;
 `;
 
-const UploadGrid = styled.div`
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+// CHANGED: single-line row instead of grid
+const UploadRow = styled.div`
+  display: flex;
+  flex-direction: row;
   gap: 18px;
   margin-top: 20px;
+  justify-content: space-between;
+  flex-wrap: nowrap;   /* force all 4 into one line */
 `;
 
 const UploadBox = styled.label`
@@ -61,6 +64,8 @@ const UploadBox = styled.label`
   display: flex;
   flex-direction: column;
   gap: 10px;
+  flex: 1;             /* each box grows/shrinks to fit row */
+  min-width: 0;
 
   &:hover {
     border-color: #38bdf8;
@@ -193,7 +198,6 @@ const FloodDetectionPage = () => {
   const [status, setStatus] = useState("");
   const [error, setError] = useState("");
 
-  // two result images from backend JSON (base64 PNGs)
   const [inputsAndPredictionUrl, setInputsAndPredictionUrl] = useState(null);
   const [xaiMapsUrl, setXaiMapsUrl] = useState(null);
 
@@ -208,7 +212,6 @@ const FloodDetectionPage = () => {
     setLoading(true);
 
     const formData = new FormData();
-    // field names MUST match FastAPI: s1_before_flood, s1_after_flood, terrain, lulc
     formData.append("s1_before_flood", s1BeforeFloodFile);
     formData.append("s1_after_flood", s1AfterFloodFile);
     formData.append("terrain", terrainFile);
@@ -228,7 +231,6 @@ const FloodDetectionPage = () => {
         throw new Error("Backend response missing expected keys.");
       }
 
-      // Build data URLs for <img>
       const inputsUrl = `data:image/png;base64,${inputs_and_prediction}`;
       const xaiUrl = `data:image/png;base64,${xai_maps}`;
 
@@ -256,7 +258,8 @@ const FloodDetectionPage = () => {
           </Subtitle>
         </Header>
 
-        <UploadGrid>
+        {/* single-line row of 4 upload boxes */}
+        <UploadRow>
           <UploadBox>
             <UploadTitle>S1 Before Flood</UploadTitle>
             <UploadHint>.tif / .tiff • VV/VH backscatter</UploadHint>
@@ -316,7 +319,7 @@ const FloodDetectionPage = () => {
             </div>
             {lulcFile && <FileName>Selected: {lulcFile.name}</FileName>}
           </UploadBox>
-        </UploadGrid>
+        </UploadRow>
 
         <ActionsRow>
           <RunButton onClick={handleSubmit} disabled={loading}>
