@@ -192,7 +192,10 @@ const FloodDetectionPage = () => {
   const [loading, setLoading] = useState(false);
   const [status, setStatus] = useState("");
   const [error, setError] = useState("");
-  const [resultImageUrl, setResultImageUrl] = useState(null);
+
+  // two result images from backend JSON (base64 PNGs)
+  const [inputsAndPredictionUrl, setInputsAndPredictionUrl] = useState(null);
+  const [xaiMapsUrl, setXaiMapsUrl] = useState(null);
 
   const handleSubmit = async () => {
     if (!s1BeforeFloodFile || !s1AfterFloodFile || !terrainFile || !lulcFile) {
@@ -215,23 +218,29 @@ const FloodDetectionPage = () => {
       const response = await axios.post("http://127.0.0.1:8000/predict", formData, {
         headers: {
           "Content-Type": "multipart/form-data",
-          Accept: "image/png",
+          Accept: "application/json",
         },
-        responseType: "blob",
       });
 
-      // revoke old URL if any
-      if (resultImageUrl) {
-        URL.revokeObjectURL(resultImageUrl);
+      const { inputs_and_prediction, xai_maps } = response.data || {};
+
+      if (!inputs_and_prediction || !xai_maps) {
+        throw new Error("Backend response missing expected keys.");
       }
 
-      const imageUrl = URL.createObjectURL(response.data);
-      setResultImageUrl(imageUrl);
+      // Build data URLs for <img>
+      const inputsUrl = `data:image/png;base64,${inputs_and_prediction}`;
+      const xaiUrl = `data:image/png;base64,${xai_maps}`;
+
+      setInputsAndPredictionUrl(inputsUrl);
+      setXaiMapsUrl(xaiUrl);
       setStatus("Inference completed.");
     } catch (err) {
       console.error(err);
       setError("Error during prediction. Check backend logs.");
       setStatus("");
+      setInputsAndPredictionUrl(null);
+      setXaiMapsUrl(null);
     } finally {
       setLoading(false);
     }
@@ -317,16 +326,31 @@ const FloodDetectionPage = () => {
           {error && <StatusText error>{error}</StatusText>}
         </ActionsRow>
 
-        {resultImageUrl && (
+        {inputsAndPredictionUrl && (
           <ResultSection>
             <ResultTitleRow>
-              <ResultTitle>Model Output</ResultTitle>
+              <ResultTitle>Inputs & Predicted Flood Map</ResultTitle>
               <ResultTag>PNG • Visualization</ResultTag>
             </ResultTitleRow>
             <ResultImageWrapper>
               <ResultImage
-                src={resultImageUrl}
-                alt="S1 before flood and predicted flood mask"
+                src={inputsAndPredictionUrl}
+                alt="Inputs and predicted flood mask"
+              />
+            </ResultImageWrapper>
+          </ResultSection>
+        )}
+
+        {xaiMapsUrl && (
+          <ResultSection>
+            <ResultTitleRow>
+              <ResultTitle>XAI Maps (Saliency, GradCAM, IG)</ResultTitle>
+              <ResultTag>PNG • Visualization</ResultTag>
+            </ResultTitleRow>
+            <ResultImageWrapper>
+              <ResultImage
+                src={xaiMapsUrl}
+                alt="XAI maps: saliency, GradCAM, integrated gradients"
               />
             </ResultImageWrapper>
           </ResultSection>
