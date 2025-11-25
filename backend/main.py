@@ -26,7 +26,7 @@ from scipy.stats import wasserstein_distance
 app = FastAPI()
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],   # adjust for prod
+    allow_origins=["*"],   
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -120,7 +120,7 @@ def compute_drift_from_raw(
       messages: list of human-readable alerts
     """
     x = np.concatenate([s1_before_raw, s1_after_raw, terrain_raw, lulc_raw], axis=0)
-    # safety check
+    
     if x.shape[0] != 11:
         raise ValueError(f"[DRIFT] Expected 11 channels in concatenated raw data, got {x.shape[0]}")
 
@@ -148,15 +148,12 @@ def compute_drift_from_raw(
         ref_norm = np.full(arr_norm.shape, tr_mean / (tr_std + 1e-6), dtype=np.float32)
         wd = float(wasserstein_distance(arr_norm, ref_norm))
 
-        # Severity
         severity = severity_from_metrics(z_m, z_s, wd)
         drift_detected = severity in ("medium", "high")
 
-        # Track overall severity
         if severity_order[severity] > severity_order[overall_severity]:
             overall_severity = severity
 
-        # Human-readable message per group
         if severity == "none":
             msg = f"{key}: No meaningful drift detected. Input distribution closely matches training data."
         elif severity == "low":
@@ -169,7 +166,7 @@ def compute_drift_from_raw(
                 f"{key}: Noticeable drift detected. Model predictions for this input "
                 f"may be less reliable; consider reviewing data or retraining."
             )
-        else:  # high
+        else:  
             msg = (
                 f"{key}: Strong drift detected. Input distribution differs significantly "
                 f"from training; downstream predictions may be unreliable."
@@ -221,7 +218,7 @@ def saliency_map(model: nn.Module, img: torch.Tensor) -> np.ndarray:
     img = img.clone().detach().to(device)
     img.requires_grad_(True)
 
-    out = model(img)        
+    out = model(img)       
     out.sum().backward()
 
     sal = img.grad.abs().squeeze(0).detach().cpu()  
@@ -256,16 +253,16 @@ class GradCAM:
         out = self.model(img)      
         out.sum().backward()
 
-        grads = self.gradients         
+        grads = self.gradients        
         acts = self.activations       
 
-        w = grads.mean(dim=(2, 3), keepdim=True)       
+        w = grads.mean(dim=(2, 3), keepdim=True)        
         cam = (w * acts).sum(dim=1, keepdim=True)       
         cam = F.relu(cam)
 
         cam = F.interpolate(
             cam,
-            size=img.shape[2:],       
+            size=img.shape[2:],        
             mode="bilinear",
             align_corners=False,
         )
@@ -289,8 +286,8 @@ class SegmentationWrapper(nn.Module):
         self.base_model = base_model
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        out = self.base_model(x)           # (N, 1, H, W)
-        out = out.mean(dim=(2, 3))         # (N, 1)
+        out = self.base_model(x)          
+        out = out.mean(dim=(2, 3))         
         return out
 
 
@@ -312,7 +309,7 @@ def integrated_gradients_map(img: torch.Tensor) -> np.ndarray:
         baselines=baseline,
         target=0,   # single "class"
         n_steps=5,
-    )                          # (1, C, H, W)
+    )                          
 
     ig_map = attr.squeeze(0).abs().sum(0).detach().cpu().numpy()  # (H, W)
     return ig_map
